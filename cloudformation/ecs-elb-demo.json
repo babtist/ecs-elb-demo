@@ -1,0 +1,254 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Demo on ECS and Application Load Balancer",
+
+  "Parameters": {
+    "ClusterName": {
+      "Type": "String",
+      "Description": "The name of an existing ECS cluster"
+    },
+    "ECSSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup::Id",
+      "Description": "The security group assigned to the ECS instances in the cluster"
+    },
+    "Vpc": {
+      "Type": "AWS::EC2::VPC::Id",
+      "Description": "An existing VPC"
+    },
+    "Subnets": {
+      "Type": "List<AWS::EC2::Subnet::Id>",
+      "Description": "Two existing subnets associated with the VPC"
+    }
+
+  },
+  "Resources": {
+    "LoadBalancerSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Loadbalancer Allowed Ports",
+        "VpcId": { "Ref" : "Vpc"},
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": "80",
+            "ToPort": "80",
+            "CidrIp": "0.0.0.0/0"
+          }
+        ]
+      }
+    },
+    "LoadBalancer" : {
+      "Type": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+      "Properties": {
+        "Scheme" : "internet-facing",
+        "Name" : { "Fn::Join": ["-", [ {"Ref": "AWS::StackName"}, "LoadBalancer"] ] },
+        "Subnets" : {"Ref": "Subnets"},
+        "SecurityGroups": [{"Ref": "LoadBalancerSecurityGroup"}]
+      }
+    },
+    "TargetGroupService1" : {
+      "Type" : "AWS::ElasticLoadBalancingV2::TargetGroup",
+      "Properties" : {
+        "Name": {
+          "Fn::Join": ["-", [ {"Ref": "AWS::StackName"}, "TargetGroupService1"] ]
+        },
+        "Port": 10,
+        "Protocol": "HTTP",
+        "HealthCheckPath": "/service1",
+        "VpcId": {"Ref" : "Vpc"}
+      }
+    },
+    "TargetGroupService2" : {
+      "Type" : "AWS::ElasticLoadBalancingV2::TargetGroup",
+      "Properties" : {
+        "Name": {
+          "Fn::Join": ["-", [ {"Ref": "AWS::StackName"}, "TargetGroupService2"] ]
+        },
+        "Port": 10,
+        "Protocol": "HTTP",
+        "HealthCheckPath": "/service2",
+        "VpcId": {"Ref" : "Vpc"}
+      }
+    },
+    "Listener": {
+      "Type": "AWS::ElasticLoadBalancingV2::Listener",
+      "Properties": {
+        "DefaultActions": [
+          {
+                             "Type": "forward",
+                             "TargetGroupArn": { "Ref": "TargetGroupService1" }
+                           }
+        ],
+        "LoadBalancerArn": { "Ref": "LoadBalancer" },
+        "Port": "80",
+        "Protocol": "HTTP"
+      }
+    },
+    "ListenerRuleService1": {
+      "Type" : "AWS::ElasticLoadBalancingV2::ListenerRule",
+      "Properties" : {
+        "Actions" : [
+          {
+            "TargetGroupArn" : {"Ref": "TargetGroupService1"},
+            "Type" : "forward"
+          }
+        ],
+        "Conditions" : [
+          {
+            "Field" : "path-pattern",
+            "Values" : [ "/service1" ]
+          }
+        ],
+        "ListenerArn" : {"Ref": "Listener"},
+        "Priority" : 1
+      }
+    },
+    "ListenerRuleService2": {
+      "Type" : "AWS::ElasticLoadBalancingV2::ListenerRule",
+      "Properties" : {
+        "Actions" : [
+          {
+            "TargetGroupArn" : {"Ref": "TargetGroupService2"},
+            "Type" : "forward"
+          }
+        ],
+        "Conditions" : [
+          {
+            "Field" : "path-pattern",
+            "Values" : [ "/service2" ]
+          }
+        ],
+        "ListenerArn" : {"Ref": "Listener"},
+        "Priority" : 2
+      }
+    },
+    "SecurityGroupIngressService1": {
+      "Type": "AWS::EC2::SecurityGroupIngress",
+      "Properties": {
+        "GroupId": {
+          "Ref": "ECSSecurityGroup"
+        },
+        "IpProtocol": "tcp",
+        "FromPort": 32768,
+        "ToPort": 65535,
+        "SourceSecurityGroupId": {
+          "Ref": "LoadBalancerSecurityGroup"
+        }
+      }
+    },
+    "Task1": {
+      "Type" : "AWS::ECS::TaskDefinition",
+      "Properties" : {
+        "ContainerDefinitions": [
+          {
+            "Name" : "Task1",
+            "Image" : "babtist/http-server-demo",
+            "Memory":200,
+            "PortMappings":[
+              {
+                "ContainerPort" : 8080
+              }
+            ],
+            "Command" : [
+              "--path",
+              "/service1",
+              "--content",
+              "'Welcome to Service #1"
+            ],
+            "Essential":true
+          }
+        ],
+        "Family":{"Fn::Join": ["-", [ {"Ref": "AWS::StackName"}, "Task1"] ]}
+      }
+    },
+    "Task2": {
+      "Type" : "AWS::ECS::TaskDefinition",
+      "Properties" : {
+        "ContainerDefinitions": [
+          {
+            "Name" : "Task2",
+            "Image" : "babtist/http-server-demo",
+            "Memory":200,
+            "PortMappings":[
+              {
+                "ContainerPort" : 8080
+              }
+            ],
+            "Command" : [
+              "--path",
+               "/service2",
+              "--content",
+              "'Welcome to Service #2"
+            ],
+            "Essential":true
+          }
+        ],
+        "Family":{"Fn::Join": ["-", [ {"Ref": "AWS::StackName"}, "Task2"] ]}
+      }
+    },
+    "Service1": {
+      "Type" : "AWS::ECS::Service",
+      "DependsOn": [
+        "ListenerRuleService1"
+      ],
+      "Properties" : {
+        "Cluster" : { "Ref" : "ClusterName" },
+        "DesiredCount" : 2,
+        "Role" : "/ecsServiceRole",
+        "TaskDefinition" : {"Ref":"Task1"},
+        "LoadBalancers": [
+          {
+            "ContainerName": "Task1",
+            "ContainerPort": "8080",
+            "TargetGroupArn" : { "Ref" : "TargetGroupService1" }
+          }
+        ]
+      }
+    },
+    "Service2": {
+      "Type" : "AWS::ECS::Service",
+      "DependsOn": [
+        "ListenerRuleService2"
+      ],
+      "Properties" : {
+        "Cluster" : { "Ref" : "ClusterName" },
+        "DesiredCount" : 2,
+        "Role" : "/ecsServiceRole",
+        "TaskDefinition" : {"Ref":"Task2"},
+        "LoadBalancers": [
+          {
+            "ContainerName": "Task2",
+            "ContainerPort": "8080",
+            "TargetGroupArn" : { "Ref" : "TargetGroupService2" }
+          }
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "Service1DNSName": {
+      "Description": "The DNS name for service #1",
+      "Value": {
+        "Fn::Join": [
+          "",
+          [
+            {"Fn::GetAtt" : [ "LoadBalancer", "DNSName" ]},
+            "/service1"
+          ]
+        ]
+      }
+    },
+    "Service2DNSName": {
+      "Description": "The DNS name for service #2",
+      "Value": {
+        "Fn::Join": [
+          "",
+          [
+            {"Fn::GetAtt" : [ "LoadBalancer", "DNSName" ]},
+            "/service2"
+          ]
+        ]
+      }
+    }
+  }
+}
